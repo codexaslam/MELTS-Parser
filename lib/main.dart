@@ -6,14 +6,19 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import 'parser_logic.dart';
+
 void main() {
   runApp(const MyApp());
 }
 
 /// IMPORTANT: Replace with your API key
 /// Get free Gemini API key from: https://aistudio.google.com/app/apikey
-// const String geminiApiKey = 'AIzaSyCWs5WLLHWeZ4lTZCEsLPv8wevk1aKZuZ0';
-const String geminiApiKey = 'AIzaSyDTCh2ak9Kp7_gG09ZOxkS6eZOA69rKzPc';
+/// Provide at build/run time via: --dart-define=GEMINI_API_KEY=YOUR_KEY
+const String geminiApiKey = String.fromEnvironment(
+  'GEMINI_API_KEY',
+  defaultValue: '',
+);
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -96,16 +101,9 @@ class _DottedBorderPainter extends CustomPainter {
 }
 
 class _HomePageState extends State<HomePage> {
-  String? _filePath;
-  String? _fileName;
-  bool _loading = false;
-  bool _isDragging = false;
-  String _status = '';
-  String _csvPreview = '';
-  final List<String> _selectedTags = [];
-
-  final List<ParameterGroup> _parameterGroups = [
-    ParameterGroup('System', [
+  // Fixed parameter sets for common phases
+  static const Map<String, List<String>> _phaseTemplates = {
+    'System': [
       'Temperature',
       'Pressure',
       'fO2',
@@ -114,8 +112,11 @@ class _HomePageState extends State<HomePage> {
       'density',
       'G',
       'H',
-    ]),
-    ParameterGroup('Liquid', [
+      'S',
+      'V',
+      'Cp',
+    ],
+    'Liquid': [
       'mass',
       'density',
       'viscosity',
@@ -139,43 +140,20 @@ class _HomePageState extends State<HomePage> {
       'Cl2O-1',
       'F2O-1',
       'Mg#',
-    ]),
-    ParameterGroup('Olivine', [
-      'mass',
-      'density',
-      'Mg',
-      'Fe2+',
-      'Fo',
-      'G',
-      'H',
-    ]),
-    ParameterGroup('Clinopyroxene', [
-      'mass',
-      'density',
-      'Na',
-      'Ca',
-      'Fe2+',
-      'Mg',
-      'diopside',
-      'buffonite',
-      'G',
-      'H',
-    ]),
-    ParameterGroup('Feldspar', [
-      'mass',
-      'density',
-      'K',
-      'Na',
-      'Ca',
-      'Al',
-      'albite',
-      'anorthite',
-      'G',
-      'H',
-    ]),
-    ParameterGroup('Total Solids', ['mass', 'density', 'G', 'H']),
-    ParameterGroup('Oxygen', ['delta moles', 'delta grams', 'G']),
-  ];
+    ],
+    'Total Solids': ['mass', 'density', 'G', 'H', 'S', 'V', 'Cp'],
+    'Oxygen': ['delta moles', 'delta grams', 'G', 'H', 'S', 'V', 'Cp'],
+  };
+  String? _filePath;
+  String? _fileName;
+  bool _loading = false;
+  bool _isDragging = false;
+  String _status = '';
+  String _csvPreview = '';
+  final List<String> _selectedTags = [];
+  List<ParameterGroup> _parameterGroups = [];
+
+  bool _fileAnalyzed = false;
 
   @override
   Widget build(BuildContext context) {
@@ -255,7 +233,29 @@ class _HomePageState extends State<HomePage> {
                           ],
                         ),
                         const SizedBox(height: 16),
-                        ..._parameterGroups.map(_buildParameterGroupCard),
+                        if (!_fileAnalyzed && _filePath == null)
+                          Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(32.0),
+                              child: Text(
+                                'Select a MELTS file to see available parameters',
+                                style: TextStyle(
+                                  color: Colors.grey.shade500,
+                                  fontSize: 14,
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          )
+                        else if (!_fileAnalyzed && _filePath != null)
+                          const Center(
+                            child: Padding(
+                              padding: EdgeInsets.all(32.0),
+                              child: CircularProgressIndicator(),
+                            ),
+                          )
+                        else
+                          ..._parameterGroups.map(_buildParameterGroupCard),
                       ],
                     ),
                   ),
@@ -357,6 +357,8 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _csvPreview = '';
       _status = '';
+      _selectedTags.clear();
+      _fileAnalyzed = false;
     });
     final res = await FilePicker.platform.pickFiles(type: FileType.any);
     if (res == null || res.files.isEmpty) return;
@@ -366,11 +368,62 @@ class _HomePageState extends State<HomePage> {
       _filePath = path;
       _fileName = res.files.single.name;
     });
+    // Analyze the file to detect phases
+    await _analyzeFileAndBuildParameters();
+  }
+
+  Future<void> _analyzeFileAndBuildParameters() async {
+    if (_filePath == null) return;
+
+    setState(() {
+      _loading = true;
+      _status = 'Analyzing file...';
+    });
+
+    try {
+      final text = await _readFileText();
+      final detected = await ParserLogic.analyzeFile(text);
+
+      final groups = <ParameterGroup>[];
+
+      // Add fixed groups first (in specific order)
+      for (final fixedPhase in ['System', 'Liquid', 'Total Solids', 'Oxygen']) {
+        if (_phaseTemplates.containsKey(fixedPhase)) {
+          groups.add(ParameterGroup(fixedPhase, _phaseTemplates[fixedPhase]!));
+        }
+      }
+
+      // Add dynamic mineral phases
+      final mineralPhases =
+          detected.keys.where((k) => !_phaseTemplates.containsKey(k)).toList()
+            ..sort();
+
+      for (final phase in mineralPhases) {
+        final params = detected[phase]!.toList()..sort();
+        if (params.isNotEmpty) {
+          groups.add(ParameterGroup(phase, params));
+        }
+      }
+
+      setState(() {
+        _parameterGroups = groups;
+        _fileAnalyzed = true;
+        _loading = false;
+        _status =
+            'File analyzed. ${mineralPhases.length} mineral phases detected.';
+      });
+    } catch (e) {
+      setState(() {
+        _loading = false;
+        _status = 'Analysis failed: $e';
+      });
+      _showSnack('Failed to analyze file: $e');
+    }
   }
 
   Widget _buildFileZone() {
     return DropTarget(
-      onDragDone: (detail) {
+      onDragDone: (detail) async {
         if (detail.files.isNotEmpty) {
           final file = detail.files.first;
           setState(() {
@@ -378,7 +431,11 @@ class _HomePageState extends State<HomePage> {
             _fileName = file.name;
             _csvPreview = '';
             _status = '';
+            _selectedTags.clear();
+            _fileAnalyzed = false;
           });
+          // Analyze the file to detect phases
+          await _analyzeFileAndBuildParameters();
         }
       },
       onDragEntered: (detail) {
@@ -604,9 +661,18 @@ class _HomePageState extends State<HomePage> {
       );
     }
 
-    final lines = _csvPreview.split('\n');
-    final header = lines.first.split(',');
-    final rows = lines.skip(1).map((l) => l.split(',')).toList();
+    final parsed = _parseCsvForPreview(_csvPreview);
+    if (parsed.isEmpty) {
+      return Center(
+        child: Text(
+          'Generated output is not valid CSV.',
+          style: TextStyle(color: Colors.grey.shade500),
+        ),
+      );
+    }
+
+    final header = parsed.first;
+    final rows = parsed.length > 1 ? parsed.sublist(1) : const <List<String>>[];
     final previewRows = rows.take(100).toList();
 
     return Container(
@@ -633,7 +699,7 @@ class _HomePageState extends State<HomePage> {
               border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
             ),
             child: Text(
-              'PREVIEW (${lines.length - 1} rows)',
+              'PREVIEW (${rows.length} rows)',
               style: const TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.bold,
@@ -664,8 +730,9 @@ class _HomePageState extends State<HomePage> {
                       )
                       .toList(),
                   rows: previewRows.map((row) {
+                    final normalized = _normalizeRowLength(row, header.length);
                     return DataRow(
-                      cells: row
+                      cells: normalized
                           .map(
                             (cell) => DataCell(
                               Text(
@@ -755,6 +822,18 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  bool _csvHasDataRows(String csv) {
+    final lines = const LineSplitter()
+        .convert(csv)
+        .where((l) => l.trim().isNotEmpty)
+        .toList();
+    if (lines.length < 2) return false;
+
+    // If we only have a header line, treat as empty output.
+    final dataLines = lines.skip(1).where((l) => l.trim().isNotEmpty).toList();
+    return dataLines.isNotEmpty;
+  }
+
   String? _extractGeminiText(List<dynamic> candidates) {
     for (final candidate in candidates) {
       if (candidate is! Map<String, dynamic>) continue;
@@ -772,146 +851,125 @@ class _HomePageState extends State<HomePage> {
     return null;
   }
 
-  Future<String> _invokeGeminiExtract(String text, List<String> tags) async {
-    // Using gemini-2.5-flash-lite
+  String _extractRelevantMeltsText(String content, {required int maxChars}) {
+    if (content.length <= maxChars) return content;
+
+    // Prefer actual MELTS blocks (those that include Temperature) over a raw prefix.
+    final separatorRegex = RegExp(r'\*+[-]+\*+');
+    final blocks = content.split(separatorRegex);
+    final candidates = blocks
+        .where((b) => b.contains('Temperature') && b.trim().isNotEmpty)
+        .toList();
+
+    final source = candidates.isNotEmpty ? candidates : blocks;
+    final buffer = StringBuffer();
+    const joinSep = '\n**********----------**********\n';
+
+    for (final block in source) {
+      final next = (buffer.isEmpty ? '' : joinSep) + block.trim();
+      if (buffer.length + next.length > maxChars) break;
+      buffer.write(next);
+    }
+
+    if (buffer.isEmpty) {
+      return content.substring(0, maxChars);
+    }
+
+    return buffer.toString();
+  }
+
+  Future<String> _invokeGeminiExtract(String content, List<String> tags) async {
+    if (geminiApiKey.trim().isEmpty) {
+      throw Exception(
+        'Missing GEMINI_API_KEY. Run with --dart-define=GEMINI_API_KEY=YOUR_KEY',
+      );
+    }
+
     final uri = Uri.parse(
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=$geminiApiKey',
     );
 
-    // Split text into blocks based on the MELTS separator
-    // The separator is a sequence of asterisks, dashes, and asterisks.
-    // We use a regex to handle varying lengths of these characters.
-    final separatorRegex = RegExp(r'\*+[-]+\*+');
-    final blocks = text.split(separatorRegex);
-    final validBlocks = blocks.where((b) => b.trim().isNotEmpty).toList();
+    final extractedText = _extractRelevantMeltsText(content, maxChars: 50000);
 
-    // Process in chunks of blocks
-    // 10 blocks per chunk is safe for token limits and context
-    const blocksPerChunk = 10;
-    final processedLines = <String>[];
+    final prompt =
+        '''
+  You are a strict CSV generator.
 
-    for (var i = 0; i < validBlocks.length; i += blocksPerChunk) {
-      final end = (i + blocksPerChunk < validBlocks.length)
-          ? i + blocksPerChunk
-          : validBlocks.length;
-      final chunkBlocks = validBlocks.sublist(i, end);
+  Task:
+  - Parse the MELTS output text and extract columns: ${tags.join(', ')}
 
-      // Reconstruct chunk with separators to help the model identify boundaries
-      final chunkText = chunkBlocks.join('\n**********----------**********\n');
+  Rules:
+  - Output ONLY valid CSV. No markdown, no commentary.
+  - First row must be the header exactly equal to the column list above.
+  - Each MELTS block corresponds to ONE CSV row.
+  - If a value is missing, leave it empty.
+  - Ensure each row has exactly ${tags.length} columns.
 
-      if (chunkText.trim().isEmpty) continue;
+  MELTS text:
+  $extractedText
+  ''';
 
-      final prompt =
-          """
-You are a scientific data parser. Extract the following columns into CSV.
-Columns: ${tags.join(', ')}
+    final body = jsonEncode({
+      'contents': [
+        {
+          'parts': [
+            {'text': prompt},
+          ],
+        },
+      ],
+      'generationConfig': {'temperature': 0.1},
+    });
 
-Rules:
-- Output ONLY the data rows. Do NOT output the header row.
-- Strictly follow the column order above.
-- Process ALL data blocks found in the text.
-- Each MELTS block (separated by **********----------**********) corresponds to ONE row.
-- If a value is missing for a column, leave it empty (e.g. `val1,,val3`).
-- Ensure each row has exactly ${tags.length} columns.
-- Do NOT repeat rows. Stop when you have processed all blocks.
-- Output ONLY CSV (no explanations, markdown, or extra text).
+    // Removed aggressive retry logic to avoid spamming usage limits.
+    // If a 429 occurs, we fail fast with a clear message.
+    final response = await http.post(
+      uri,
+      headers: {'Content-Type': 'application/json'},
+      body: body,
+    );
 
-MELTS text:
-$chunkText
-""";
-
-      final body = {
-        "contents": [
-          {
-            "parts": [
-              {"text": prompt},
-            ],
-          },
-        ],
-        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 8192},
-      };
-
-      final resp = await http
-          .post(
-            uri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(body),
-          )
-          .timeout(Duration(seconds: 120));
-
-      if (resp.statusCode != 200) {
-        throw Exception('Gemini API error: ${resp.statusCode} ${resp.body}');
+    if (response.statusCode != 200) {
+      if (response.statusCode == 429) {
+        // Log the full body for debugging, but show a user-friendly message
+        debugPrint('Gemini 429 Body: ${response.body}');
+        throw Exception(
+          'Gemini Quota Exceeded (429). Check API key limits for this model.',
+        );
       }
-
-      final decoded = jsonDecode(resp.body);
-      final candidates = decoded['candidates'] as List<dynamic>?;
-      if (candidates == null || candidates.isEmpty) {
-        throw Exception('No response from Gemini');
-      }
-
-      var extracted = _extractGeminiText(candidates);
-      if (extracted == null || extracted.isEmpty) {
-        continue;
-      }
-
-      // Clean markdown
-      extracted = extracted.replaceAll(
-        RegExp(r'^```csv\s*', multiLine: true),
-        '',
+      throw Exception(
+        'Gemini API Error (${response.statusCode}): ${response.body}',
       );
-      extracted = extracted.replaceAll(RegExp(r'^```\s*', multiLine: true), '');
-      extracted = extracted.replaceAll(RegExp(r'```$', multiLine: true), '');
-      extracted = extracted.trim();
-
-      final chunkLines = extracted.split('\n');
-      for (var j = 0; j < chunkLines.length; j++) {
-        var line = chunkLines[j].trim();
-        if (line.isEmpty) continue;
-
-        // Skip if it looks like the header (contains the first tag name)
-        if (j == 0 && line.contains(tags.first)) {
-          continue;
-        }
-
-        // Simple CSV split
-        final parts = line.split(',');
-        String finalLine;
-
-        // Fix length
-        if (parts.length > tags.length) {
-          // Truncate extra columns
-          finalLine = parts.sublist(0, tags.length).join(',');
-        } else if (parts.length < tags.length) {
-          // Pad missing columns
-          final padded = List<String>.from(parts);
-          while (padded.length < tags.length) {
-            padded.add('');
-          }
-          finalLine = padded.join(',');
-        } else {
-          finalLine = line;
-        }
-
-        // Dedup: prevent consecutive identical rows (common hallucination)
-        if (processedLines.isNotEmpty && processedLines.last == finalLine) {
-          continue;
-        }
-
-        processedLines.add(finalLine);
-      }
     }
 
-    final header = tags.join(',');
-    return '$header\n${processedLines.join('\n')}';
+    final data = jsonDecode(response.body);
+    if (!data.containsKey('candidates')) {
+      throw Exception('Invalid Gemini response: no candidates');
+    }
+
+    final text = _extractGeminiText(data['candidates']);
+    if (text == null) throw Exception('No CSV generated from AI');
+
+    // Clean up markdown block if present, just in case
+    final clean = text.replaceAll('```csv', '').replaceAll('```', '').trim();
+    if (!_csvHasDataRows(clean)) {
+      throw Exception(
+        'Gemini returned no data rows. Try local parsing or adjust selected columns.',
+      );
+    }
+    return clean;
+  }
+
+  List<String> _normalizeRowLength(List<String> row, int targetLength) {
+    if (row.length == targetLength) return row;
+    if (row.length > targetLength) return row.sublist(0, targetLength);
+    final padded = List<String>.from(row);
+    while (padded.length < targetLength) {
+      padded.add('');
+    }
+    return padded;
   }
 
   Future<void> _parseAndSaveCsv() async {
-    if (geminiApiKey == 'REPLACE_WITH_YOUR_GEMINI_API_KEY') {
-      _showSnack(
-        'Replace GEMINI_API_KEY with your key from https://aistudio.google.com/app/apikey',
-      );
-      return;
-    }
     if (_filePath == null) {
       _showSnack('Pick a file first.');
       return;
@@ -921,41 +979,127 @@ $chunkText
       return;
     }
 
+    final hasGeminiKey = geminiApiKey.trim().isNotEmpty;
+
     setState(() {
       _loading = true;
-      _status = 'Reading file...';
+      _status = hasGeminiKey
+          ? 'Sending data to Gemini...'
+          : 'Parsing locally...';
       _csvPreview = '';
     });
 
     try {
       final text = await _readFileText();
-      setState(() {
-        _status = 'Sending to Google Gemini...';
-      });
 
-      final csv = await _invokeGeminiExtract(text, _selectedTags);
+      String csv;
+      if (hasGeminiKey) {
+        try {
+          csv = await _invokeGeminiExtract(text, _selectedTags);
+        } catch (e) {
+          // If Gemini fails or returns empty, fall back to deterministic local parsing.
+          debugPrint('Gemini failed, falling back to local parser: $e');
+          _showSnack('Gemini returned no rows. Using local parser instead.');
+          csv = await ParserLogic.parse(text, _selectedTags);
+        }
+      } else {
+        csv = await ParserLogic.parse(text, _selectedTags);
+      }
 
+      if (!_csvHasDataRows(csv)) {
+        throw Exception(
+          'No rows generated. Check the input file format and selected columns.',
+        );
+      }
+
+      // 1. Update UI to show result immediately
       setState(() {
         _csvPreview = csv;
-        _status = 'Saving CSV...';
+        _loading = false; // Stop spinner
+        _status = 'Conversion Complete. Saving...';
       });
 
+      // 2. Allow a small delay for the UI to paint the preview
+      await Future.delayed(const Duration(milliseconds: 300));
+
+      // 3. Then trigger the save dialog
       final savedPath = await _saveCsvToDevice(csv, generateFilename());
+
       setState(() {
         _status = 'Saved to: $savedPath';
       });
       _showSnack('CSV saved: $savedPath');
     } catch (e, st) {
+      // Explicitly print the error to the debug console
+      debugPrint('--------------------------------------------------');
+      debugPrint('ERROR in _parseAndSaveCsv: $e');
+      debugPrint('Stack Trace:\n$st');
+      debugPrint('--------------------------------------------------');
+
       setState(() {
-        _status = 'Error: ${e.toString()}';
-      });
-      debugPrint(st.toString());
-      _showSnack('Error: ${e.toString()}');
-    } finally {
-      setState(() {
-        _loading = false;
+        _loading = false; // Ensure loading stops on error
+        // Filter out "Save cancelled" to be less alarming
+        if (e.toString().contains('Save cancelled')) {
+          _status = 'Save cancelled';
+        } else {
+          _status = 'Error: ${e.toString()}';
+          _showSnack('Error: ${e.toString()}');
+        }
       });
     }
+  }
+
+  List<List<String>> _parseCsvForPreview(String csv) {
+    final lines = const LineSplitter()
+        .convert(csv)
+        .where((l) => l.trim().isNotEmpty)
+        .toList();
+    if (lines.isEmpty) return const <List<String>>[];
+
+    final rows = <List<String>>[];
+    for (final line in lines) {
+      rows.add(_parseCsvLine(line));
+    }
+    // Must have at least a header.
+    if (rows.first.isEmpty) return const <List<String>>[];
+    return rows;
+  }
+
+  List<String> _parseCsvLine(String line) {
+    final out = <String>[];
+    final buf = StringBuffer();
+    var inQuotes = false;
+
+    for (var i = 0; i < line.length; i++) {
+      final ch = line[i];
+
+      if (ch == '"') {
+        if (inQuotes) {
+          // Escaped quote "" -> add a single quote and skip one char.
+          final nextIsQuote = i + 1 < line.length && line[i + 1] == '"';
+          if (nextIsQuote) {
+            buf.write('"');
+            i++;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          inQuotes = true;
+        }
+        continue;
+      }
+
+      if (ch == ',' && !inQuotes) {
+        out.add(buf.toString());
+        buf.clear();
+        continue;
+      }
+
+      buf.write(ch);
+    }
+
+    out.add(buf.toString());
+    return out;
   }
 
   Future<String> _readFileText() async {

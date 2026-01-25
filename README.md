@@ -1,16 +1,13 @@
 # melts_parser
 
-A new Flutter project.
+Flutter desktop app to parse MELTS `.out` files into CSV.
 
-## Getting Started
+## Run
 
-This project is a starting point for a Flutter application.
+This app calls the Gemini API. Provide your API key at runtime using `--dart-define`:
 
-A few resources to get you started if this is your first Flutter project:
+```bash
+flutter run -d macos --dart-define=GEMINI_API_KEY=YOUR_KEY
+```
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+If `GEMINI_API_KEY` is missing/empty, the app will fail with a clear error.
