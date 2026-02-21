@@ -286,7 +286,7 @@ class _HomePageState extends State<HomePage> {
                                   _selectedTags.isEmpty ||
                                   _filePath == null)
                               ? null
-                              : _parseAndSaveCsv,
+                              : _parseAndPreview,
                           icon: _loading
                               ? Container(
                                   width: 20,
@@ -969,7 +969,7 @@ class _HomePageState extends State<HomePage> {
     return padded;
   }
 
-  Future<void> _parseAndSaveCsv() async {
+  Future<void> _parseAndPreview() async {
     if (_filePath == null) {
       _showSnack('Pick a file first.');
       return;
@@ -1012,39 +1012,24 @@ class _HomePageState extends State<HomePage> {
         );
       }
 
-      // 1. Update UI to show result immediately
+      // Update UI to show result immediately (no save dialog)
       setState(() {
         _csvPreview = csv;
-        _loading = false; // Stop spinner
-        _status = 'Conversion Complete. Saving...';
+        _loading = false;
+        _status =
+            'Conversion complete. Use "Save CSV" button to save the file.';
       });
-
-      // 2. Allow a small delay for the UI to paint the preview
-      await Future.delayed(const Duration(milliseconds: 300));
-
-      // 3. Then trigger the save dialog
-      final savedPath = await _saveCsvToDevice(csv, generateFilename());
-
-      setState(() {
-        _status = 'Saved to: $savedPath';
-      });
-      _showSnack('CSV saved: $savedPath');
     } catch (e, st) {
       // Explicitly print the error to the debug console
       debugPrint('--------------------------------------------------');
-      debugPrint('ERROR in _parseAndSaveCsv: $e');
+      debugPrint('ERROR in _parseAndPreview: $e');
       debugPrint('Stack Trace:\n$st');
       debugPrint('--------------------------------------------------');
 
       setState(() {
-        _loading = false; // Ensure loading stops on error
-        // Filter out "Save cancelled" to be less alarming
-        if (e.toString().contains('Save cancelled')) {
-          _status = 'Save cancelled';
-        } else {
-          _status = 'Error: ${e.toString()}';
-          _showSnack('Error: ${e.toString()}');
-        }
+        _loading = false;
+        _status = 'Error: ${e.toString()}';
+        _showSnack('Error: ${e.toString()}');
       });
     }
   }
