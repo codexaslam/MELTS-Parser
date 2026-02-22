@@ -165,10 +165,8 @@ Oxygen           delta moles = 0.00289129  delta grams = 0.0925178
     expect(row, contains('0.0925178'));
   });
 
-  test(
-    'ParserLogic includes duplicate olivine from fractionated summary',
-    () async {
-      const sample = '''
+  test('ParserLogic separates duplicates into _frac columns', () async {
+    const sample = '''
 **********----------**********
 Title: dummy
 
@@ -189,30 +187,36 @@ System           mass = 100.09 (gm)  density = 2.97 (gm/cc)
 **********----------**********
 ''';
 
-      final tags = <String>[
-        'System.Temperature',
-        'Olivine.mass',
-        'Olivine.density',
-        'Olivine.H',
-        'System.mass',
-      ];
+    final tags = <String>[
+      'System.Temperature',
+      'Olivine.mass',
+      'Olivine.mass_frac',
+      'Olivine.density',
+      'Olivine.density_frac',
+      'Olivine.H',
+      'Olivine.H_frac',
+      'System.mass',
+    ];
 
-      final csv = await ParserLogic.parse(sample, tags);
-      final lines = csv.split('\n').where((l) => l.trim().isNotEmpty).toList();
-      expect(lines.length, greaterThanOrEqualTo(2));
+    final csv = await ParserLogic.parse(sample, tags);
+    final lines = csv.split('\n').where((l) => l.trim().isNotEmpty).toList();
+    expect(lines.length, greaterThanOrEqualTo(2));
 
-      final row = lines[1];
-      expect(row, contains('1003.36'));
+    final row = lines[1];
+    expect(row, contains('1003.36'));
 
-      // Now expecting comma separated values from both occurrences
-      expect(row, contains('0.04, 0.47'));
-      expect(row, contains('4.04, 3.99'));
-      expect(row, contains('-306.21, -3627.75'));
-    },
-  );
+    // Original columns contain only values from before "Summary of all fractionated phases"
+    final parts = row.split(',');
+    expect(parts[1], '0.04'); // Olivine.mass
+    expect(parts[2], '0.47'); // Olivine.mass_frac
+    expect(parts[3], '4.04'); // Olivine.density
+    expect(parts[4], '3.99'); // Olivine.density_frac
+    expect(parts[5], '-306.21'); // Olivine.H
+    expect(parts[6], '-3627.75'); // Olivine.H_frac
+  });
 
   test(
-    'ParserLogic fills olivine from fractionated summary when missing above',
+    'ParserLogic stores olivine from fractionated summary in _frac columns when missing above',
     () async {
       const sample = '''
 **********----------**********
@@ -233,8 +237,11 @@ System           mass = 100.09 (gm)  density = 2.97 (gm/cc)
       final tags = <String>[
         'System.Temperature',
         'Olivine.mass',
+        'Olivine.mass_frac',
         'Olivine.density',
+        'Olivine.density_frac',
         'Olivine.H',
+        'Olivine.H_frac',
       ];
 
       final csv = await ParserLogic.parse(sample, tags);
@@ -243,9 +250,15 @@ System           mass = 100.09 (gm)  density = 2.97 (gm/cc)
 
       final row = lines[1];
       expect(row, contains('1003.36'));
-      expect(row, contains('0.47'));
-      expect(row, contains('3.99'));
-      expect(row, contains('-3627.75'));
+
+      // Normal columns should be empty, _frac columns should have the values
+      final parts = row.split(',');
+      expect(parts[1], ''); // Olivine.mass - empty
+      expect(parts[2], '0.47'); // Olivine.mass_frac
+      expect(parts[3], ''); // Olivine.density - empty
+      expect(parts[4], '3.99'); // Olivine.density_frac
+      expect(parts[5], ''); // Olivine.H - empty
+      expect(parts[6], '-3627.75'); // Olivine.H_frac
     },
   );
 
@@ -336,10 +349,15 @@ System           mass = 100.09 (gm)  density = 2.97 (gm/cc)
       final tags = <String>[
         'System.Temperature',
         'Clinopyroxene.mass',
+        'Clinopyroxene.mass_frac',
         'Clinopyroxene.Cp',
+        'Clinopyroxene.Cp_frac',
         'Clinopyroxene.diopside',
+        'Clinopyroxene.diopside_frac',
         'Whitlockite.mass',
+        'Whitlockite.mass_frac',
         'Whitlockite.Cp',
+        'Whitlockite.Cp_frac',
       ];
 
       final csv = await ParserLogic.parse(sample, tags);
@@ -347,15 +365,21 @@ System           mass = 100.09 (gm)  density = 2.97 (gm/cc)
       expect(lines.length, greaterThanOrEqualTo(2));
 
       final row = lines[1];
+      final parts = row.split(',');
 
-      // Multiple clinopyroxene occurrences should be comma-separated
-      expect(row, contains('2.96, 32.57')); // masses
-      expect(row, contains('3.55, 37.98')); // Cp values
-      expect(row, contains('50.12, 31.02')); // diopside
+      // Clinopyroxene values should be separated
+      expect(parts[1], '2.96'); // Clinopyroxene.mass
+      expect(parts[2], '32.57'); // Clinopyroxene.mass_frac
+      expect(parts[3], '3.55'); // Clinopyroxene.Cp
+      expect(parts[4], '37.98'); // Clinopyroxene.Cp_frac
+      expect(parts[5], '50.12'); // Clinopyroxene.diopside
+      expect(parts[6], '31.02'); // Clinopyroxene.diopside_frac
 
-      // Multiple whitlockite occurrences should be comma-separated
-      expect(row, contains('0.01, 0.01')); // masses (both same)
-      expect(row, contains('0.01, 0.01')); // Cp values (both same)
+      // Whitlockite values should be separated
+      expect(parts[7], '0.01'); // Whitlockite.mass
+      expect(parts[8], '0.01'); // Whitlockite.mass_frac
+      expect(parts[9], '0.01'); // Whitlockite.Cp
+      expect(parts[10], '0.01'); // Whitlockite.Cp_frac
     },
   );
 }

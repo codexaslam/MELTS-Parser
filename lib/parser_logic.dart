@@ -116,11 +116,21 @@ class ParserLogic {
       data[group]![key]!.add(val.trim());
     }
 
+    void addFrac(String group, String key, String val) {
+      if (val.trim().isEmpty) return;
+      final fracKey = '${key}_frac';
+      data.putIfAbsent(group, () => {});
+      data[group]!.putIfAbsent(fracKey, () => []);
+
+      data[group]![fracKey]!.add(val.trim());
+    }
+
     final lines = block.split('\n');
 
     void parseFormulaLineIntoCurrentSection(
       String line,
       String currentSection,
+      bool isFromFractionated,
     ) {
       // Skip obviously non-formula lines.
       if (line.contains('=') || line.contains(':')) return;
@@ -151,11 +161,14 @@ class ParserLogic {
           "Fe'''" => 'Fe3+',
           _ => rawKey,
         };
-        add(currentSection, key, rawVal);
+        if (isFromFractionated) {
+          addFrac(currentSection, key, rawVal);
+        } else {
+          add(currentSection, key, rawVal);
+        }
       }
     }
 
-    // --- Global Pattern Matches (System) ---
     // Support both "Temperature:" and "T =" styles.
     final tempMatch1 = RegExp(
       r'Temperature\s*:\s*([0-9.+-]+)',
@@ -274,9 +287,8 @@ class ParserLogic {
 
       // 2. Data Extraction
 
-      // Note: we DO parse minerals inside the fractionated summary.
-      // The `add()` helper keeps only the first value per key, so summary values
-      // will only fill in when a mineral was not present earlier in the block.
+      // Determine which add function to use based on fractionated summary status
+      final addFunc = inFractionatedSummary ? addFrac : add;
 
       // A. Oxygen keys contain spaces; handle explicitly.
       final oxygenMoles = RegExp(
@@ -284,21 +296,25 @@ class ParserLogic {
         caseSensitive: false,
       ).firstMatch(line);
       if (oxygenMoles != null) {
-        add('Oxygen', 'delta moles', oxygenMoles.group(1)!);
+        addFunc('Oxygen', 'delta moles', oxygenMoles.group(1)!);
       }
       final oxygenGrams = RegExp(
         r'delta\s+grams\s*=\s*([0-9.eE+-]+)',
         caseSensitive: false,
       ).firstMatch(line);
       if (oxygenGrams != null) {
-        add('Oxygen', 'delta grams', oxygenGrams.group(1)!);
+        addFunc('Oxygen', 'delta grams', oxygenGrams.group(1)!);
       }
 
       // A2. Mineral formula lines (e.g., cpx Na0.02Ca0.74..., (Ca0.01Mg0.25Fe''0.63...)2SiO4)
       // Parse formula for ANY mineral phase (anything not in fixedSections)
       // This handles all 66 possible MELTS mineral phases dynamically
       if (!fixedSections.contains(currentSection)) {
-        parseFormulaLineIntoCurrentSection(line, currentSection);
+        parseFormulaLineIntoCurrentSection(
+          line,
+          currentSection,
+          inFractionatedSummary,
+        );
       }
 
       // B. "Key: Value" pattern (older style)
@@ -310,7 +326,7 @@ class ParserLogic {
         final val = colonMatch.group(2)!;
         if (!(currentSection == 'System' &&
             (key == 'Temperature' || key == 'Pressure'))) {
-          add(currentSection, key, val);
+          addFunc(currentSection, key, val);
         }
         continue;
       }
@@ -319,7 +335,7 @@ class ParserLogic {
       for (final m in RegExp(
         r'([A-Za-z0-9.#+-]+)\s*=\s*([0-9.+-]+(?:[eE][+-]?[0-9]+)?)',
       ).allMatches(line)) {
-        add(currentSection, m.group(1)!, m.group(2)!);
+        addFunc(currentSection, m.group(1)!, m.group(2)!);
       }
 
       // D. Two-line tables: headers on one line, numeric values on the next.
@@ -345,12 +361,12 @@ class ParserLogic {
             for (var k = 0; k < count; k++) {
               final header = headerTokens[k];
               final value = valueTokens[k];
-              add(currentSection, header, value);
+              addFunc(currentSection, header, value);
 
               // Dynamic aliases for common end-members (works for any mineral phase)
               final h = header.toLowerCase();
-              if (h == 'forsterite') add(currentSection, 'Fo', value);
-              if (h == 'fayalite') add(currentSection, 'Fa', value);
+              if (h == 'forsterite') addFunc(currentSection, 'Fo', value);
+              if (h == 'fayalite') addFunc(currentSection, 'Fa', value);
             }
             i++; // Consume value line
             continue;

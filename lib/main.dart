@@ -152,6 +152,9 @@ class _HomePageState extends State<HomePage> {
   String _csvPreview = '';
   final List<String> _selectedTags = [];
   List<ParameterGroup> _parameterGroups = [];
+  
+  // Track which parameters have _frac versions available
+  final Map<String, Set<String>> _fracAvailability = {};
 
   bool _fileAnalyzed = false;
 
@@ -385,6 +388,7 @@ class _HomePageState extends State<HomePage> {
       final detected = await ParserLogic.analyzeFile(text);
 
       final groups = <ParameterGroup>[];
+      _fracAvailability.clear();
 
       // Add fixed groups first (in specific order)
       for (final fixedPhase in ['System', 'Liquid', 'Total Solids', 'Oxygen']) {
@@ -399,9 +403,31 @@ class _HomePageState extends State<HomePage> {
             ..sort();
 
       for (final phase in mineralPhases) {
-        final params = detected[phase]!.toList()..sort();
-        if (params.isNotEmpty) {
-          groups.add(ParameterGroup(phase, params));
+        final allParams = detected[phase]!.toList();
+        
+        // Separate base parameters from _frac parameters
+        final baseParams = <String>[];
+        final fracParams = <String>{};
+        
+        for (final param in allParams) {
+          if (param.endsWith('_frac')) {
+            // Extract base parameter name and track that it has _frac version
+            final baseParam = param.substring(0, param.length - 5);
+            fracParams.add(baseParam);
+          } else {
+            baseParams.add(param);
+          }
+        }
+        
+        // Store which parameters have _frac versions for this phase
+        if (fracParams.isNotEmpty) {
+          _fracAvailability[phase] = fracParams;
+        }
+        
+        // Only show base parameters in UI (not _frac versions)
+        baseParams.sort();
+        if (baseParams.isNotEmpty) {
+          groups.add(ParameterGroup(phase, baseParams));
         }
       }
 
@@ -834,6 +860,31 @@ class _HomePageState extends State<HomePage> {
     return dataLines.isNotEmpty;
   }
 
+  /// Expands selected tags to include _frac versions if available
+  List<String> _expandTagsWithFrac(List<String> selectedTags) {
+    final expanded = <String>[];
+    
+    for (final tag in selectedTags) {
+      // Add the original tag
+      expanded.add(tag);
+      
+      // Check if this tag has a _frac version available
+      final parts = tag.split('.');
+      if (parts.length == 2) {
+        final phase = parts[0];
+        final param = parts[1];
+        
+        // If this phase-parameter combination has a _frac version, add it
+        if (_fracAvailability.containsKey(phase) && 
+            _fracAvailability[phase]!.contains(param)) {
+          expanded.add('$phase.${param}_frac');
+        }
+      }
+    }
+    
+    return expanded;
+  }
+
   String? _extractGeminiText(List<dynamic> candidates) {
     for (final candidate in candidates) {
       if (candidate is! Map<String, dynamic>) continue;
@@ -991,19 +1042,22 @@ class _HomePageState extends State<HomePage> {
 
     try {
       final text = await _readFileText();
+      
+      // Expand selected tags to include _frac versions if available
+      final expandedTags = _expandTagsWithFrac(_selectedTags);
 
       String csv;
       if (hasGeminiKey) {
         try {
-          csv = await _invokeGeminiExtract(text, _selectedTags);
+          csv = await _invokeGeminiExtract(text, expandedTags);
         } catch (e) {
           // If Gemini fails or returns empty, fall back to deterministic local parsing.
           debugPrint('Gemini failed, falling back to local parser: $e');
           _showSnack('Gemini returned no rows. Using local parser instead.');
-          csv = await ParserLogic.parse(text, _selectedTags);
+          csv = await ParserLogic.parse(text, expandedTags);
         }
       } else {
-        csv = await ParserLogic.parse(text, _selectedTags);
+        csv = await ParserLogic.parse(text, expandedTags);
       }
 
       if (!_csvHasDataRows(csv)) {
