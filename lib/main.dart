@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -19,6 +18,13 @@ const String geminiApiKey = String.fromEnvironment(
   'GEMINI_API_KEY',
   defaultValue: '',
 );
+
+class FileItem {
+  final String path;
+  final String name;
+  bool isSelected;
+  FileItem({required this.path, required this.name, this.isSelected = false});
+}
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -144,15 +150,17 @@ class _HomePageState extends State<HomePage> {
     'Total Solids': ['mass', 'density', 'G', 'H', 'S', 'V', 'Cp'],
     'Oxygen': ['delta moles', 'delta grams', 'G', 'H', 'S', 'V', 'Cp'],
   };
-  String? _filePath;
-  String? _fileName;
+
+  // Folder & file management
+  String? _folderPath;
+  List<FileItem> _filesInFolder = [];
+
   bool _loading = false;
-  bool _isDragging = false;
   String _status = '';
   String _csvPreview = '';
   final List<String> _selectedTags = [];
   List<ParameterGroup> _parameterGroups = [];
-  
+
   // Track which parameters have _frac versions available
   final Map<String, Set<String>> _fracAvailability = {};
 
@@ -205,7 +213,11 @@ class _HomePageState extends State<HomePage> {
                         ),
                         const SizedBox(height: 12),
                         _buildFileZone(),
-                        const SizedBox(height: 32),
+                        if (_filesInFolder.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          _buildFileBrowser(),
+                        ],
+                        const SizedBox(height: 24),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
@@ -236,12 +248,12 @@ class _HomePageState extends State<HomePage> {
                           ],
                         ),
                         const SizedBox(height: 16),
-                        if (!_fileAnalyzed && _filePath == null)
+                        if (!_fileAnalyzed && _filesInFolder.isEmpty)
                           Center(
                             child: Padding(
                               padding: const EdgeInsets.all(32.0),
                               child: Text(
-                                'Select a MELTS file to see available parameters',
+                                'Select a folder with .out files to begin',
                                 style: TextStyle(
                                   color: Colors.grey.shade500,
                                   fontSize: 14,
@@ -250,7 +262,8 @@ class _HomePageState extends State<HomePage> {
                               ),
                             ),
                           )
-                        else if (!_fileAnalyzed && _filePath != null)
+                        else if (!_fileAnalyzed &&
+                            _getSelectedFiles().isNotEmpty)
                           const Center(
                             child: Padding(
                               padding: EdgeInsets.all(32.0),
@@ -287,7 +300,7 @@ class _HomePageState extends State<HomePage> {
                           onPressed:
                               (_loading ||
                                   _selectedTags.isEmpty ||
-                                  _filePath == null)
+                                  _getSelectedFiles().isEmpty)
                               ? null
                               : _parseAndPreview,
                           icon: _loading
@@ -347,88 +360,157 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // --- Logic Helpers ---
-
   String generateFilename() {
-    final base = _fileName ?? 'melts_input';
-    final nameNoExt = base.contains('.') ? base.split('.').first : base;
-    final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
-    return '$nameNoExt-parsed-$timestamp.csv';
+    final selected = _getSelectedFiles();
+    if (selected.isEmpty) return 'melts_combined.csv';
+    if (selected.length == 1) {
+      final base = selected.first.name;
+      final nameNoExt = base.contains('.') ? base.split('.').first : base;
+      final ts = DateTime.now().toIso8601String().replaceAll(':', '-');
+      return '$nameNoExt-parsed-$ts.csv';
+    }
+    final ts = DateTime.now().toIso8601String().replaceAll(':', '-');
+    return 'melts_combined-$ts.csv';
   }
 
-  Future<void> pickFile() async {
-    setState(() {
-      _csvPreview = '';
-      _status = '';
-      _selectedTags.clear();
-      _fileAnalyzed = false;
-    });
-    final res = await FilePicker.platform.pickFiles(type: FileType.any);
+  Future<void> pickFiles() async {
+    setState(_resetPickState);
+
+    final res = await FilePicker.platform.pickFiles(
+      type: FileType.any,
+      allowMultiple: true,
+    );
     if (res == null || res.files.isEmpty) return;
-    final path = res.files.single.path;
-    if (path == null) return;
+
+    final items =
+        res.files
+            .where((f) => f.path != null)
+            .map((f) => FileItem(path: f.path!, name: f.name, isSelected: true))
+            .toList()
+          ..sort((a, b) => a.name.compareTo(b.name));
+
     setState(() {
-      _filePath = path;
-      _fileName = res.files.single.name;
+      _filesInFolder = items;
+      _status = '${items.length} file(s) selected';
     });
-    // Analyze the file to detect phases
-    await _analyzeFileAndBuildParameters();
+
+    await _analyzeSelectedFiles();
   }
 
-  Future<void> _analyzeFileAndBuildParameters() async {
-    if (_filePath == null) return;
+  Future<void> pickFolder() async {
+    setState(_resetPickState);
+
+    final dir = await FilePicker.platform.getDirectoryPath();
+    if (dir == null) return;
 
     setState(() {
+      _folderPath = dir;
       _loading = true;
-      _status = 'Analyzing file...';
+      _status = 'Scanning folder...';
     });
 
     try {
-      final text = await _readFileText();
-      final detected = await ParserLogic.analyzeFile(text);
+      final files = await Directory(dir)
+          .list(recursive: false)
+          .where((e) => e is File && e.path.toLowerCase().endsWith('.out'))
+          .cast<File>()
+          .toList();
+
+      if (files.isEmpty) {
+        setState(() {
+          _loading = false;
+          _status = 'No .out files found in folder';
+        });
+        _showSnack('No .out files found in selected folder');
+        return;
+      }
+
+      final items =
+          files
+              .map(
+                (f) => FileItem(
+                  path: f.path,
+                  name: f.path.split(Platform.pathSeparator).last,
+                ),
+              )
+              .toList()
+            ..sort((a, b) => a.name.compareTo(b.name));
+
+      setState(() {
+        _filesInFolder = items;
+        _loading = false;
+        _status = '${items.length} .out file(s) found';
+      });
+    } catch (e) {
+      setState(() {
+        _loading = false;
+        _status = 'Error scanning folder: $e';
+      });
+      _showSnack('Error scanning folder: $e');
+    }
+  }
+
+  Future<void> _analyzeSelectedFiles() async {
+    final selected = _getSelectedFiles();
+    if (selected.isEmpty) return;
+
+    setState(() {
+      _loading = true;
+      _status = 'Analyzing ${selected.length} file(s)...';
+      _fileAnalyzed = false;
+      _selectedTags.clear();
+    });
+
+    try {
+      // Merge parameters detected across all selected files
+      final merged = <String, Set<String>>{};
+      for (final item in selected) {
+        final text = await File(item.path).readAsString();
+        final detected = await ParserLogic.analyzeFile(text);
+        for (final entry in detected.entries) {
+          merged.putIfAbsent(entry.key, () => <String>{});
+          merged[entry.key]!.addAll(entry.value);
+        }
+      }
 
       final groups = <ParameterGroup>[];
       _fracAvailability.clear();
 
-      // Add fixed groups first (in specific order)
       for (final fixedPhase in ['System', 'Liquid', 'Total Solids', 'Oxygen']) {
         if (_phaseTemplates.containsKey(fixedPhase)) {
           groups.add(ParameterGroup(fixedPhase, _phaseTemplates[fixedPhase]!));
+          // Fixed phases can also have _frac variants (e.g. Liquid in
+          // "Fractionate Liquids" mode). Detect them just like minerals.
+          if (merged.containsKey(fixedPhase)) {
+            final fracParams = merged[fixedPhase]!
+                .where((p) => p.endsWith('_frac'))
+                .map((p) => p.substring(0, p.length - 5))
+                .toSet();
+            if (fracParams.isNotEmpty)
+              _fracAvailability[fixedPhase] = fracParams;
+          }
         }
       }
 
-      // Add dynamic mineral phases
       final mineralPhases =
-          detected.keys.where((k) => !_phaseTemplates.containsKey(k)).toList()
+          merged.keys.where((k) => !_phaseTemplates.containsKey(k)).toList()
             ..sort();
 
       for (final phase in mineralPhases) {
-        final allParams = detected[phase]!.toList();
-        
-        // Separate base parameters from _frac parameters
+        final allParams = merged[phase]!.toList();
         final baseParams = <String>[];
         final fracParams = <String>{};
-        
         for (final param in allParams) {
           if (param.endsWith('_frac')) {
-            // Extract base parameter name and track that it has _frac version
-            final baseParam = param.substring(0, param.length - 5);
-            fracParams.add(baseParam);
+            fracParams.add(param.substring(0, param.length - 5));
           } else {
             baseParams.add(param);
           }
         }
-        
-        // Store which parameters have _frac versions for this phase
-        if (fracParams.isNotEmpty) {
-          _fracAvailability[phase] = fracParams;
-        }
-        
-        // Only show base parameters in UI (not _frac versions)
+        if (fracParams.isNotEmpty) _fracAvailability[phase] = fracParams;
         baseParams.sort();
-        if (baseParams.isNotEmpty) {
+        if (baseParams.isNotEmpty)
           groups.add(ParameterGroup(phase, baseParams));
-        }
       }
 
       setState(() {
@@ -436,112 +518,211 @@ class _HomePageState extends State<HomePage> {
         _fileAnalyzed = true;
         _loading = false;
         _status =
-            'File analyzed. ${mineralPhases.length} mineral phases detected.';
+            '${selected.length} file(s) analyzed · ${mineralPhases.length} mineral phases detected';
       });
     } catch (e) {
       setState(() {
         _loading = false;
         _status = 'Analysis failed: $e';
       });
-      _showSnack('Failed to analyze file: $e');
+      _showSnack('Failed to analyze files: $e');
     }
   }
 
-  Widget _buildFileZone() {
-    return DropTarget(
-      onDragDone: (detail) async {
-        if (detail.files.isNotEmpty) {
-          final file = detail.files.first;
-          setState(() {
-            _filePath = file.path;
-            _fileName = file.name;
-            _csvPreview = '';
-            _status = '';
-            _selectedTags.clear();
-            _fileAnalyzed = false;
-          });
-          // Analyze the file to detect phases
-          await _analyzeFileAndBuildParameters();
-        }
-      },
-      onDragEntered: (detail) {
-        setState(() {
-          _isDragging = true;
-        });
-      },
-      onDragExited: (detail) {
-        setState(() {
-          _isDragging = false;
-        });
-      },
-      child: InkWell(
-        onTap: pickFile,
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 16),
-          decoration: BoxDecoration(
-            color: _isDragging
-                ? Colors.teal.shade100
-                : (_filePath != null ? Colors.teal.shade50 : Colors.white),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: _isDragging
-                  ? Colors.teal
-                  : (_filePath != null ? Colors.teal : Colors.grey.shade300),
-              style: BorderStyle.none,
-              width: 1,
-            ),
-          ),
-          child: CustomPaint(
-            painter: _DottedBorderPainter(
-              color: _isDragging
-                  ? Colors.teal
-                  : (_filePath != null ? Colors.teal : Colors.grey.shade400),
-            ),
-            child: Container(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                children: [
-                  Icon(
-                    _isDragging
-                        ? Icons.file_download
-                        : (_filePath != null
-                              ? Icons.description
-                              : Icons.upload_file),
-                    size: 40,
-                    color: _isDragging
-                        ? Colors.teal
-                        : (_filePath != null
-                              ? Colors.teal
-                              : Colors.grey.shade400),
+  Widget _buildFileBrowser() {
+    final selectedCount = _getSelectedFiles().length;
+    return Card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'FILES  (${_filesInFolder.length})',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.grey,
+                    letterSpacing: 1.0,
                   ),
-                  const SizedBox(height: 12),
-                  Text(
-                    _fileName ?? 'Drag & Drop or Click to select .out file',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: _isDragging
-                          ? Colors.teal.shade800
-                          : (_filePath != null
-                                ? Colors.teal.shade800
-                                : Colors.grey.shade600),
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                  if (_filePath != null && !_isDragging) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      'Ready to process',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.teal.shade600,
+                ),
+                Row(
+                  children: [
+                    if (selectedCount > 0)
+                      Text(
+                        '$selectedCount selected',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.teal.shade700,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    TextButton(
+                      onPressed: () {
+                        final allSelected = _filesInFolder.every(
+                          (f) => f.isSelected,
+                        );
+                        setState(() {
+                          for (final f in _filesInFolder) {
+                            f.isSelected = !allSelected;
+                          }
+                          _fileAnalyzed = false;
+                          _parameterGroups.clear();
+                        });
+                        if (!allSelected) _analyzeSelectedFiles();
+                      },
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        minimumSize: const Size(50, 28),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text(
+                        _filesInFolder.every((f) => f.isSelected)
+                            ? 'Deselect all'
+                            : 'Select all',
+                        style: const TextStyle(fontSize: 11),
                       ),
                     ),
                   ],
+                ),
+              ],
+            ),
+          ),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 260),
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: _filesInFolder.length,
+              itemBuilder: (context, index) {
+                final file = _filesInFolder[index];
+                return CheckboxListTile(
+                  dense: true,
+                  visualDensity: VisualDensity.compact,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                  title: Text(
+                    file.name,
+                    style: const TextStyle(fontSize: 12),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  value: file.isSelected,
+                  onChanged: (val) {
+                    setState(() {
+                      file.isSelected = val ?? false;
+                      _fileAnalyzed = false;
+                      _parameterGroups.clear();
+                    });
+                    if (_getSelectedFiles().isNotEmpty) {
+                      _analyzeSelectedFiles();
+                    }
+                  },
+                  controlAffinity: ListTileControlAffinity.leading,
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFileZone() {
+    final hasFiles = _filesInFolder.isNotEmpty;
+    final label = hasFiles
+        ? (_folderPath != null
+              ? _folderPath!.split(Platform.pathSeparator).last
+              : '${_filesInFolder.length} file(s) selected')
+        : null;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: hasFiles ? Colors.teal.shade50 : Colors.white,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: CustomPaint(
+        painter: _DottedBorderPainter(
+          color: hasFiles ? Colors.teal : Colors.grey.shade400,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              Icon(
+                hasFiles
+                    ? (_folderPath != null
+                          ? Icons.folder_open
+                          : Icons.description)
+                    : Icons.upload_file,
+                size: 36,
+                color: hasFiles ? Colors.teal : Colors.grey.shade400,
+              ),
+              const SizedBox(height: 8),
+              if (hasFiles) ...[
+                Text(
+                  label!,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: Colors.teal.shade800,
+                    fontSize: 13,
+                  ),
+                  textAlign: TextAlign.center,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (_filesInFolder.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    '${_filesInFolder.length} .out file(s)',
+                    style: TextStyle(fontSize: 11, color: Colors.teal.shade600),
+                  ),
+                ],
+              ] else
+                Text(
+                  'Select files or a folder',
+                  style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
+                ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: pickFiles,
+                    icon: const Icon(
+                      Icons.insert_drive_file_outlined,
+                      size: 16,
+                    ),
+                    label: const Text('Files'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.teal.shade700,
+                      side: BorderSide(color: Colors.teal.shade300),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 8,
+                      ),
+                      textStyle: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  OutlinedButton.icon(
+                    onPressed: pickFolder,
+                    icon: const Icon(Icons.folder_outlined, size: 16),
+                    label: const Text('Folder'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.teal.shade700,
+                      side: BorderSide(color: Colors.teal.shade300),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 8,
+                      ),
+                      textStyle: const TextStyle(fontSize: 12),
+                    ),
+                  ),
                 ],
               ),
-            ),
+            ],
           ),
         ),
       ),
@@ -679,7 +860,7 @@ class _HomePageState extends State<HomePage> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Select file > Select params > Convert',
+              'Folder → Files → Parameters → Convert',
               style: TextStyle(color: Colors.grey.shade400),
             ),
           ],
@@ -841,7 +1022,7 @@ class _HomePageState extends State<HomePage> {
           )
         else
           Text(
-            'To get started, select a file and parameters.',
+            'Select a folder → pick files → choose parameters → convert.',
             style: TextStyle(color: Colors.grey.shade500),
           ),
       ],
@@ -860,28 +1041,35 @@ class _HomePageState extends State<HomePage> {
     return dataLines.isNotEmpty;
   }
 
+  String _escapeCsvCell(String cell) {
+    if (cell.contains(',') || cell.contains('"') || cell.contains('\n')) {
+      return '"${cell.replaceAll('"', '""')}"';
+    }
+    return cell;
+  }
+
   /// Expands selected tags to include _frac versions if available
   List<String> _expandTagsWithFrac(List<String> selectedTags) {
     final expanded = <String>[];
-    
+
     for (final tag in selectedTags) {
       // Add the original tag
       expanded.add(tag);
-      
+
       // Check if this tag has a _frac version available
       final parts = tag.split('.');
       if (parts.length == 2) {
         final phase = parts[0];
         final param = parts[1];
-        
+
         // If this phase-parameter combination has a _frac version, add it
-        if (_fracAvailability.containsKey(phase) && 
+        if (_fracAvailability.containsKey(phase) &&
             _fracAvailability[phase]!.contains(param)) {
           expanded.add('$phase.${param}_frac');
         }
       }
     }
-    
+
     return expanded;
   }
 
@@ -928,6 +1116,11 @@ class _HomePageState extends State<HomePage> {
 
     return buffer.toString();
   }
+
+  // --- Logic Helpers ---
+
+  List<FileItem> _getSelectedFiles() =>
+      _filesInFolder.where((f) => f.isSelected).toList();
 
   Future<String> _invokeGeminiExtract(String content, List<String> tags) async {
     if (geminiApiKey.trim().isEmpty) {
@@ -1021,70 +1214,86 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _parseAndPreview() async {
-    if (_filePath == null) {
-      _showSnack('Pick a file first.');
+    final selectedFiles = _getSelectedFiles();
+    if (selectedFiles.isEmpty) {
+      _showSnack('Select at least one file first.');
       return;
     }
     if (_selectedTags.isEmpty) {
-      _showSnack('Select at least one tag for columns.');
+      _showSnack('Select at least one parameter.');
       return;
     }
 
     final hasGeminiKey = geminiApiKey.trim().isNotEmpty;
+    final expandedTags = _expandTagsWithFrac(_selectedTags);
+    // Always include Source File as first column
+    final headerCols = ['Source File', ...expandedTags];
 
     setState(() {
       _loading = true;
-      _status = hasGeminiKey
-          ? 'Sending data to Gemini...'
-          : 'Parsing locally...';
+      _status = hasGeminiKey && selectedFiles.length == 1
+          ? 'Sending to Gemini...'
+          : 'Parsing ${selectedFiles.length} file(s)...';
       _csvPreview = '';
     });
 
     try {
-      final text = await _readFileText();
-      
-      // Expand selected tags to include _frac versions if available
-      final expandedTags = _expandTagsWithFrac(_selectedTags);
+      final allRows = <List<String>>[];
 
-      String csv;
-      if (hasGeminiKey) {
-        try {
-          csv = await _invokeGeminiExtract(text, expandedTags);
-        } catch (e) {
-          // If Gemini fails or returns empty, fall back to deterministic local parsing.
-          debugPrint('Gemini failed, falling back to local parser: $e');
-          _showSnack('Gemini returned no rows. Using local parser instead.');
+      for (var i = 0; i < selectedFiles.length; i++) {
+        final item = selectedFiles[i];
+        setState(() {
+          _status = 'Processing ${i + 1}/${selectedFiles.length}: ${item.name}';
+        });
+
+        final text = await File(item.path).readAsString();
+
+        String csv;
+        if (hasGeminiKey && selectedFiles.length == 1) {
+          try {
+            csv = await _invokeGeminiExtract(text, expandedTags);
+          } catch (e) {
+            debugPrint('Gemini failed for ${item.name}, falling back: $e');
+            csv = await ParserLogic.parse(text, expandedTags);
+          }
+        } else {
           csv = await ParserLogic.parse(text, expandedTags);
         }
-      } else {
-        csv = await ParserLogic.parse(text, expandedTags);
+
+        final lines = const LineSplitter()
+            .convert(csv)
+            .where((l) => l.trim().isNotEmpty)
+            .toList();
+
+        // Skip header row (index 0), prepend source filename to each data row
+        for (var j = 1; j < lines.length; j++) {
+          allRows.add([item.name, ..._parseCsvLine(lines[j])]);
+        }
       }
 
-      if (!_csvHasDataRows(csv)) {
-        throw Exception(
-          'No rows generated. Check the input file format and selected columns.',
-        );
+      if (allRows.isEmpty) {
+        throw Exception('No rows generated from any selected file.');
       }
 
-      // Update UI to show result immediately (no save dialog)
+      final buf = StringBuffer();
+      buf.writeln(headerCols.map(_escapeCsvCell).join(','));
+      for (final row in allRows) {
+        buf.writeln(row.map(_escapeCsvCell).join(','));
+      }
+
       setState(() {
-        _csvPreview = csv;
+        _csvPreview = buf.toString();
         _loading = false;
         _status =
-            'Conversion complete. Use "Save CSV" button to save the file.';
+            'Done · ${allRows.length} rows from ${selectedFiles.length} file(s)';
       });
     } catch (e, st) {
-      // Explicitly print the error to the debug console
-      debugPrint('--------------------------------------------------');
-      debugPrint('ERROR in _parseAndPreview: $e');
-      debugPrint('Stack Trace:\n$st');
-      debugPrint('--------------------------------------------------');
-
+      debugPrint('ERROR in _parseAndPreview: $e\n$st');
       setState(() {
         _loading = false;
-        _status = 'Error: ${e.toString()}';
-        _showSnack('Error: ${e.toString()}');
+        _status = 'Error: $e';
       });
+      _showSnack('Error: $e');
     }
   }
 
@@ -1141,27 +1350,20 @@ class _HomePageState extends State<HomePage> {
     return out;
   }
 
-  Future<String> _readFileText() async {
-    if (_filePath == null) throw Exception('No file chosen');
-    final file = File(_filePath!);
-    return await file.readAsString();
+  void _resetPickState() {
+    _csvPreview = '';
+    _status = '';
+    _selectedTags.clear();
+    _fileAnalyzed = false;
+    _filesInFolder.clear();
+    _folderPath = null;
   }
 
   Future<String> _saveCsvToDevice(String csv, String name) async {
-    // Attempt to open the save dialog in the same directory as the input file
-    String? initialDirectory;
-    if (_filePath != null) {
-      try {
-        initialDirectory = File(_filePath!).parent.path;
-      } catch (e) {
-        debugPrint('Could not determine parent directory: $e');
-      }
-    }
-
     final String? outputFile = await FilePicker.platform.saveFile(
       dialogTitle: 'Save CSV',
       fileName: name,
-      initialDirectory: initialDirectory,
+      initialDirectory: _folderPath,
       type: FileType.custom,
       allowedExtensions: ['csv'],
     );

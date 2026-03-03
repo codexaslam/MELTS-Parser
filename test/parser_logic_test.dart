@@ -382,4 +382,71 @@ System           mass = 100.09 (gm)  density = 2.97 (gm/cc)
       expect(parts[10], '0.01'); // Whitlockite.Cp_frac
     },
   );
+
+  test(
+    'fractionated liquid gets Liquid_frac columns (FM.out / Fractionate Liquids)',
+    () async {
+      // Mirrors the FM.out block structure reported by the user.
+      // The "Summary of all fractionated phases" contains a liquid entry that
+      // must land in Liquid.*_frac columns, NOT in the same Liquid.* columns.
+      const sample = '''
+**********----------**********
+Title: dummy
+
+T = 870.00 (C)  P = 1.000 (kbars)  log(10) f O2 = -12.03
+
+Liquid           mass = 0.01 (gm)  density = 2.20 (gm/cc)  viscosity = 5.50 (log 10 poise)
+        G = -171.12 (J)  H = -139.82 (J)  S = 0.03 (J/K)  V = 0.00 (cc)  Cp = 0.01 (J/K)
+        SiO2   TiO2  Al2O3
+       75.49   0.31  10.03
+
+feldspar         mass = 40.43 (gm)  density = 2.59 (gm/cc)
+                 G = -671016.48 (J)  H = -568298.14 (J)  S = 89.86 (J/K)  V = 15.64 (cc)  Cp = 49.22 (J/K)
+             albite     anorthite      sanidine
+              77.37         22.40          0.22
+
+Total solids     mass = 47.14 (gm)  density = 2.25 (gm/cc)
+                 G = -771329.80 (J)  H = -646156.53 (J)  S = 109.50 (J/K)
+
+Summary of all fractionated phases: (total mass = 52.85 grams)
+
+liquid           mass = 52.85 (gm)  density = 2.19 (gm/cc)
+        wt% ox: SiO2 76.37 TiO2 0.26
+        G = -879825.53 (J)  H = -721349.42 (J)  S = 138.63 (J/K)  V = 24.14 (cc)  Cp = 71.15 (J/K)
+
+Viscosity of the System cannot be computed.
+
+System           mass = 100.00 (gm)  density = 2.22 (gm/cc)
+                 G = -1651326.44 (J)  H = -1367645.77 (J)  S = 248.16 (J/K)
+
+**********----------**********
+''';
+
+      final tags = [
+        'System.Temperature',
+        'Liquid.mass',
+        'Liquid.mass_frac',
+        'Liquid.G',
+        'Liquid.G_frac',
+        'Liquid.SiO2',
+        'Liquid.SiO2_frac',
+        'Feldspar.mass',
+      ];
+
+      final csv = await ParserLogic.parse(sample, tags);
+      final lines = csv.split('\n').where((l) => l.trim().isNotEmpty).toList();
+      expect(lines.length, greaterThanOrEqualTo(2));
+
+      final parts = lines[1].split(',');
+
+      expect(parts[0], '870.00'); // System.Temperature
+      expect(parts[1], '0.01'); // Liquid.mass  (current block)
+      expect(parts[2], '52.85'); // Liquid.mass_frac  (summary)
+      expect(parts[3], '-171.12'); // Liquid.G  (current block)
+      expect(parts[4], '-879825.53'); // Liquid.G_frac  (summary)
+      expect(parts[5], '75.49'); // Liquid.SiO2  (2-line table)
+      expect(parts[6], '76.37'); // Liquid.SiO2_frac  (wt% ox: line)
+      expect(parts[7], '40.43'); // Feldspar.mass  (not affected)
+    },
+  );
 }

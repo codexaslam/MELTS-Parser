@@ -267,13 +267,13 @@ class ParserLogic {
         continue;
       }
 
-      // The summary section ends before system/oxygen/viscosity reporting.
+      // The summary section ends only when the overall System (with mass=) or
+      // Oxygen line is reached.  Liquid, Total Solids, and all 66 possible
+      // mineral phases can legitimately appear INSIDE the summary and must
+      // therefore receive _frac storage — do NOT exit on those lines.
       if (inFractionatedSummary &&
-          (lower.startsWith('viscosity of the system') ||
-              lower.startsWith('system') ||
-              lower.startsWith('oxygen') ||
-              lower.startsWith('total solids') ||
-              lower.startsWith('liquid'))) {
+          ((lower.startsWith('system') && lower.contains('mass')) ||
+              lower.startsWith('oxygen'))) {
         inFractionatedSummary = false;
       }
 
@@ -317,7 +317,18 @@ class ParserLogic {
         );
       }
 
-      // B. "Key: Value" pattern (older style)
+      // A3. "wt% ox: Key1 Val1 Key2 Val2 ..." format used by fractionated-liquid
+      // summary lines, e.g. "wt% ox: SiO2 76.37 TiO2 0.26 Al2O3 10.28 ..."
+      if (lower.startsWith('wt%')) {
+        final colonIdx = line.indexOf(':');
+        final after = colonIdx >= 0 ? line.substring(colonIdx + 1) : line;
+        for (final m in RegExp(
+          r'([A-Za-z][A-Za-z0-9]*(?:[0-9])?[A-Za-z0-9]*)\s+([0-9.+-]+(?:[eE][+-]?[0-9]+)?)',
+        ).allMatches(after)) {
+          addFunc(currentSection, m.group(1)!, m.group(2)!);
+        }
+        continue;
+      }
       final colonMatch = RegExp(
         r'^([A-Za-z0-9.#+-]+)\s*:\s*([0-9.+-]+(?:[eE][+-]?[0-9]+)?)',
       ).firstMatch(line);
