@@ -186,7 +186,12 @@ class _HomePageState extends State<HomePage> {
                 color: Colors.teal.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Icon(Icons.science, color: Colors.teal, size: 20),
+              child: Image.asset(
+                'assets/images/apple-touch-icon.png',
+                width: 24,
+                height: 24,
+                fit: BoxFit.contain,
+              ),
             ),
             const SizedBox(width: 12),
             const Text('MELTS Parser'),
