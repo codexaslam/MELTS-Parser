@@ -1,9 +1,11 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:universal_html/html.dart' as html;
+import 'package:universal_io/io.dart';
 
 import 'parser_logic.dart';
 
@@ -22,8 +24,14 @@ const String geminiApiKey = String.fromEnvironment(
 class FileItem {
   final String path;
   final String name;
+  final List<int>? bytes;
   bool isSelected;
-  FileItem({required this.path, required this.name, this.isSelected = false});
+  FileItem({
+    required this.path,
+    required this.name,
+    this.bytes,
+    this.isSelected = false,
+  });
 }
 
 class HomePage extends StatefulWidget {
@@ -379,13 +387,21 @@ class _HomePageState extends State<HomePage> {
     final res = await FilePicker.platform.pickFiles(
       type: FileType.any,
       allowMultiple: true,
+      withData: kIsWeb, // Required for Web to get file content
     );
     if (res == null || res.files.isEmpty) return;
 
     final items =
         res.files
-            .where((f) => f.path != null)
-            .map((f) => FileItem(path: f.path!, name: f.name, isSelected: true))
+            .where((f) => f.path != null || f.bytes != null)
+            .map(
+              (f) => FileItem(
+                path: f.path ?? f.name,
+                name: f.name,
+                bytes: f.bytes,
+                isSelected: true,
+              ),
+            )
             .toList()
           ..sort((a, b) => a.name.compareTo(b.name));
 
@@ -398,6 +414,13 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> pickFolder() async {
+    if (kIsWeb) {
+      _showSnack(
+        'Folder selection is not supported on Web. Please select files directly.',
+      );
+      return;
+    }
+
     setState(_resetPickState);
 
     final dir = await FilePicker.platform.getDirectoryPath();
@@ -465,7 +488,9 @@ class _HomePageState extends State<HomePage> {
       // Merge parameters detected across all selected files
       final merged = <String, Set<String>>{};
       for (final item in selected) {
-        final text = await File(item.path).readAsString();
+        final text = item.bytes != null
+            ? utf8.decode(item.bytes!)
+            : await File(item.path).readAsString();
         final detected = await ParserLogic.analyzeFile(text);
         for (final entry in detected.entries) {
           merged.putIfAbsent(entry.key, () => <String>{});
@@ -1246,7 +1271,9 @@ class _HomePageState extends State<HomePage> {
           _status = 'Processing ${i + 1}/${selectedFiles.length}: ${item.name}';
         });
 
-        final text = await File(item.path).readAsString();
+        final text = item.bytes != null
+            ? utf8.decode(item.bytes!)
+            : await File(item.path).readAsString();
 
         String csv;
         if (hasGeminiKey && selectedFiles.length == 1) {
@@ -1360,6 +1387,20 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<String> _saveCsvToDevice(String csv, String name) async {
+    if (kIsWeb) {
+      final bytes = utf8.encode(csv);
+      final blob = html.Blob([bytes], 'text/csv');
+      final url = html.Url.createObjectUrlFromBlob(blob);
+      final anchor = html.AnchorElement(href: url)
+        ..style.display = 'none'
+        ..download = name;
+      html.document.body!.children.add(anchor);
+      anchor.click();
+      html.document.body!.children.remove(anchor);
+      html.Url.revokeObjectUrl(url);
+      return name;
+    }
+
     final String? outputFile = await FilePicker.platform.saveFile(
       dialogTitle: 'Save CSV',
       fileName: name,
