@@ -13,9 +13,6 @@ void main() {
   runApp(const MyApp());
 }
 
-/// IMPORTANT: Replace with your API key
-/// Get free Gemini API key from: https://aistudio.google.com/app/apikey
-/// Provide at build/run time via: --dart-define=GEMINI_API_KEY=YOUR_KEY
 const String geminiApiKey = String.fromEnvironment(
   'GEMINI_API_KEY',
   defaultValue: '',
@@ -105,8 +102,6 @@ class _DottedBorderPainter extends CustomPainter {
       const Radius.circular(12),
     );
 
-    // Fallback to solid line for simplicity as 'path_drawing' is not available
-    // but the request was to look modern, a solid clean border is better than a broken one.
     canvas.drawRRect(rrect, paint);
   }
 
@@ -115,7 +110,6 @@ class _DottedBorderPainter extends CustomPainter {
 }
 
 class _HomePageState extends State<HomePage> {
-  // Fixed parameter sets for common phases
   static const Map<String, List<String>> _phaseTemplates = {
     'System': [
       'Temperature',
@@ -159,7 +153,6 @@ class _HomePageState extends State<HomePage> {
     'Oxygen': ['delta moles', 'delta grams', 'G', 'H', 'S', 'V', 'Cp'],
   };
 
-  // Folder & file management
   String? _folderPath;
   List<FileItem> _filesInFolder = [];
 
@@ -169,7 +162,6 @@ class _HomePageState extends State<HomePage> {
   final List<String> _selectedTags = [];
   List<ParameterGroup> _parameterGroups = [];
 
-  // Track which parameters have _frac versions available
   final Map<String, Set<String>> _fracAvailability = {};
 
   bool _fileAnalyzed = false;
@@ -183,7 +175,7 @@ class _HomePageState extends State<HomePage> {
             Container(
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                color: Colors.teal.withOpacity(0.1),
+                color: Colors.teal.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Image.asset(
@@ -204,7 +196,6 @@ class _HomePageState extends State<HomePage> {
       ),
       body: Row(
         children: [
-          // LEFT PANEL: Configurations (Input & Parameters)
           SizedBox(
             width: 400,
             child: Container(
@@ -490,7 +481,6 @@ class _HomePageState extends State<HomePage> {
     });
 
     try {
-      // Merge parameters detected across all selected files
       final merged = <String, Set<String>>{};
       for (final item in selected) {
         final text = item.bytes != null
@@ -509,15 +499,15 @@ class _HomePageState extends State<HomePage> {
       for (final fixedPhase in ['System', 'Liquid', 'Total Solids', 'Oxygen']) {
         if (_phaseTemplates.containsKey(fixedPhase)) {
           groups.add(ParameterGroup(fixedPhase, _phaseTemplates[fixedPhase]!));
-          // Fixed phases can also have _frac variants (e.g. Liquid in
-          // "Fractionate Liquids" mode). Detect them just like minerals.
+
           if (merged.containsKey(fixedPhase)) {
             final fracParams = merged[fixedPhase]!
                 .where((p) => p.endsWith('_frac'))
                 .map((p) => p.substring(0, p.length - 5))
                 .toSet();
-            if (fracParams.isNotEmpty)
+            if (fracParams.isNotEmpty) {
               _fracAvailability[fixedPhase] = fracParams;
+            }
           }
         }
       }
@@ -537,10 +527,13 @@ class _HomePageState extends State<HomePage> {
             baseParams.add(param);
           }
         }
-        if (fracParams.isNotEmpty) _fracAvailability[phase] = fracParams;
+        if (fracParams.isNotEmpty) {
+          _fracAvailability[phase] = fracParams;
+        }
         baseParams.sort();
-        if (baseParams.isNotEmpty)
+        if (baseParams.isNotEmpty) {
           groups.add(ParameterGroup(phase, baseParams));
+        }
       }
 
       setState(() {
@@ -919,7 +912,7 @@ class _HomePageState extends State<HomePage> {
         border: Border.all(color: Colors.grey.shade200),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -994,69 +987,71 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildStatusHeader() {
-    return Row(
-      children: [
-        if (_loading)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.amber.shade100,
-              borderRadius: BorderRadius.circular(20),
+    Widget content;
+    if (_loading) {
+      content = Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.amber.shade100,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(strokeWidth: 2),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(
-                  width: 12,
-                  height: 12,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                _status.isEmpty ? 'Processing...' : _status,
+                style: TextStyle(
+                  color: Colors.amber.shade900,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  _status.isEmpty ? 'Processing...' : _status,
-                  style: TextStyle(
-                    color: Colors.amber.shade900,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12,
-                  ),
-                ),
-              ],
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
-          )
-        else if (_csvPreview.isNotEmpty)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.green.shade100,
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.check_circle,
-                  size: 16,
-                  color: Colors.green.shade700,
+          ],
+        ),
+      );
+    } else if (_csvPreview.isNotEmpty) {
+      content = Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.green.shade100,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.check_circle, size: 16, color: Colors.green.shade700),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                'Conversion Complete',
+                style: TextStyle(
+                  color: Colors.green.shade900,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  'Conversion Complete',
-                  style: TextStyle(
-                    color: Colors.green.shade900,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12,
-                  ),
-                ),
-              ],
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
-          )
-        else
-          Text(
-            'Select a folder → pick files → choose parameters → convert.',
-            style: TextStyle(color: Colors.grey.shade500),
-          ),
-      ],
-    );
+          ],
+        ),
+      );
+    } else {
+      content = Text(
+        'Select a folder → pick files → choose parameters → convert.',
+        style: TextStyle(color: Colors.grey.shade500),
+      );
+    }
+
+    return Row(children: [Flexible(child: content)]);
   }
 
   bool _csvHasDataRows(String csv) {
@@ -1066,7 +1061,6 @@ class _HomePageState extends State<HomePage> {
         .toList();
     if (lines.length < 2) return false;
 
-    // If we only have a header line, treat as empty output.
     final dataLines = lines.skip(1).where((l) => l.trim().isNotEmpty).toList();
     return dataLines.isNotEmpty;
   }
@@ -1078,21 +1072,17 @@ class _HomePageState extends State<HomePage> {
     return cell;
   }
 
-  /// Expands selected tags to include _frac versions if available
   List<String> _expandTagsWithFrac(List<String> selectedTags) {
     final expanded = <String>[];
 
     for (final tag in selectedTags) {
-      // Add the original tag
       expanded.add(tag);
 
-      // Check if this tag has a _frac version available
       final parts = tag.split('.');
       if (parts.length == 2) {
         final phase = parts[0];
         final param = parts[1];
 
-        // If this phase-parameter combination has a _frac version, add it
         if (_fracAvailability.containsKey(phase) &&
             _fracAvailability[phase]!.contains(param)) {
           expanded.add('$phase.${param}_frac');
@@ -1123,7 +1113,6 @@ class _HomePageState extends State<HomePage> {
   String _extractRelevantMeltsText(String content, {required int maxChars}) {
     if (content.length <= maxChars) return content;
 
-    // Prefer actual MELTS blocks (those that include Temperature) over a raw prefix.
     final separatorRegex = RegExp(r'\*+[-]+\*+');
     final blocks = content.split(separatorRegex);
     final candidates = blocks
@@ -1146,8 +1135,6 @@ class _HomePageState extends State<HomePage> {
 
     return buffer.toString();
   }
-
-  // --- Logic Helpers ---
 
   List<FileItem> _getSelectedFiles() =>
       _filesInFolder.where((f) => f.isSelected).toList();
@@ -1194,8 +1181,6 @@ class _HomePageState extends State<HomePage> {
       'generationConfig': {'temperature': 0.1},
     });
 
-    // Removed aggressive retry logic to avoid spamming usage limits.
-    // If a 429 occurs, we fail fast with a clear message.
     final response = await http.post(
       uri,
       headers: {'Content-Type': 'application/json'},
@@ -1204,7 +1189,6 @@ class _HomePageState extends State<HomePage> {
 
     if (response.statusCode != 200) {
       if (response.statusCode == 429) {
-        // Log the full body for debugging, but show a user-friendly message
         debugPrint('Gemini 429 Body: ${response.body}');
         throw Exception(
           'Gemini Quota Exceeded (429). Check API key limits for this model.',
@@ -1223,7 +1207,6 @@ class _HomePageState extends State<HomePage> {
     final text = _extractGeminiText(data['candidates']);
     if (text == null) throw Exception('No CSV generated from AI');
 
-    // Clean up markdown block if present, just in case
     final clean = text.replaceAll('```csv', '').replaceAll('```', '').trim();
     if (!_csvHasDataRows(clean)) {
       throw Exception(
@@ -1256,14 +1239,12 @@ class _HomePageState extends State<HomePage> {
 
     final hasGeminiKey = geminiApiKey.trim().isNotEmpty;
     final expandedTags = _expandTagsWithFrac(_selectedTags);
-    // Always include Source File as first column
+
     final headerCols = ['Source File', ...expandedTags];
 
     setState(() {
       _loading = true;
-      _status = hasGeminiKey && selectedFiles.length == 1
-          ? 'Sending to Gemini...'
-          : 'Parsing ${selectedFiles.length} file(s)...';
+      _status = 'Parsing ${selectedFiles.length} file(s)...';
       _csvPreview = '';
     });
 
@@ -1281,15 +1262,38 @@ class _HomePageState extends State<HomePage> {
             : await File(item.path).readAsString();
 
         String csv;
-        if (hasGeminiKey && selectedFiles.length == 1) {
-          try {
-            csv = await _invokeGeminiExtract(text, expandedTags);
-          } catch (e) {
-            debugPrint('Gemini failed for ${item.name}, falling back: $e');
-            csv = await ParserLogic.parse(text, expandedTags);
-          }
-        } else {
+        try {
           csv = await ParserLogic.parse(text, expandedTags);
+
+          final lineCount = const LineSplitter()
+              .convert(csv)
+              .where((l) => l.trim().isNotEmpty)
+              .length;
+
+          if (lineCount <= 1 && hasGeminiKey && selectedFiles.length == 1) {
+            debugPrint(
+              'ParserLogic returned no data rows for ${item.name}. Falling back to Gemini.',
+            );
+            setState(
+              () =>
+                  _status = 'Parsing failed locally, falling back to Gemini...',
+            );
+            final geminiCsv = await _invokeGeminiExtract(text, expandedTags);
+            if (geminiCsv.trim().isNotEmpty) {
+              csv = geminiCsv;
+            }
+          }
+        } catch (e) {
+          debugPrint('ParserLogic failed for ${item.name}: $e');
+          if (hasGeminiKey && selectedFiles.length == 1) {
+            setState(
+              () =>
+                  _status = 'Parsing failed locally, falling back to Gemini...',
+            );
+            csv = await _invokeGeminiExtract(text, expandedTags);
+          } else {
+            rethrow;
+          }
         }
 
         final lines = const LineSplitter()
@@ -1297,7 +1301,6 @@ class _HomePageState extends State<HomePage> {
             .where((l) => l.trim().isNotEmpty)
             .toList();
 
-        // Skip header row (index 0), prepend source filename to each data row
         for (var j = 1; j < lines.length; j++) {
           allRows.add([item.name, ..._parseCsvLine(lines[j])]);
         }
@@ -1340,7 +1343,7 @@ class _HomePageState extends State<HomePage> {
     for (final line in lines) {
       rows.add(_parseCsvLine(line));
     }
-    // Must have at least a header.
+
     if (rows.first.isEmpty) return const <List<String>>[];
     return rows;
   }
@@ -1355,7 +1358,6 @@ class _HomePageState extends State<HomePage> {
 
       if (ch == '"') {
         if (inQuotes) {
-          // Escaped quote "" -> add a single quote and skip one char.
           final nextIsQuote = i + 1 < line.length && line[i + 1] == '"';
           if (nextIsQuote) {
             buf.write('"');

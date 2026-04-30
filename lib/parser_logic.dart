@@ -6,15 +6,10 @@ class ParserLogic {
     r'^[+-]?(?:\d+\.?\d*|\d*\.\d+)(?:[eE][+-]?\d+)?$',
   );
 
-  // Parses mineral-style formula segments like:
-  //   (Ca0.01Mg0.25Fe''0.63Mn0.12...)2SiO4
-  //   cpx Na0.02Ca0.74Fe''0.58Mg0.53Fe'''0.09Ti0.01...
-  // Only matches decimal values to avoid mis-parsing oxide headers (e.g. Al2O3).
   static final RegExp _formulaComponentRegex = RegExp(
     r"(Fe'''|Fe''|[A-Z][a-z]?)([0-9]*\.[0-9]+)",
   );
 
-  /// Analyzes the MELTS file and returns detected phases with their parameters
   static Future<Map<String, Set<String>>> analyzeFile(
     String fileContent,
   ) async {
@@ -42,17 +37,12 @@ class ParserLogic {
     return phaseParameters;
   }
 
-  /// Main entry point to parse the MELTS file content.
   static Future<String> parse(
     String fileContent,
     List<String> selectedTags,
   ) async {
-    // 1. Split into blocks
-    // Using a regex to handle potential variations in the separator line
     final rawBlocks = fileContent.split(_separatorRegex);
 
-    // 2. Filter valid blocks
-    // MELTS output varies: some use "Temperature:", others use "T =".
     final blocks = rawBlocks.where((b) {
       final t = b.trim();
       if (t.isEmpty) return false;
@@ -60,7 +50,6 @@ class ParserLogic {
           RegExp(r'\bT\s*=\s*[0-9.+-]').hasMatch(t);
     }).toList();
 
-    // 3. Process
     final rows = <String>[];
     rows.add(selectedTags.join(',')); // Header
 
@@ -89,9 +78,8 @@ class ParserLogic {
         if (values.isEmpty) {
           row.add('');
         } else {
-          // Join multiple values with comma+space (e.g. "0.04, 32.57")
           final joinedValue = values.join(', ');
-          // If the value contains a comma, wrap in quotes for proper CSV format
+
           if (joinedValue.contains(',')) {
             row.add('"$joinedValue"');
           } else {
@@ -132,14 +120,12 @@ class ParserLogic {
       String currentSection,
       bool isFromFractionated,
     ) {
-      // Skip obviously non-formula lines.
       if (line.contains('=') || line.contains(':')) return;
 
       var work = line.trim();
-      // Strip common prefixes like "cpx".
+
       work = work.replaceFirst(RegExp(r'^[a-z]+\s+', caseSensitive: false), '');
 
-      // If wrapped in parentheses, only parse the parentheses content.
       final open = work.indexOf('(');
       final close = work.indexOf(')');
       if (open != -1 && close != -1 && close > open) {
@@ -147,13 +133,12 @@ class ParserLogic {
       }
 
       final matches = _formulaComponentRegex.allMatches(work).toList();
-      if (matches.length < 2) return; // avoid false positives
+      if (matches.length < 2) return;
 
       for (final m in matches) {
         final rawKey = m.group(1)!;
         final rawVal = m.group(2)!;
 
-        // Don't store oxygen atom counts (not part of UI tags).
         if (rawKey == 'O') continue;
 
         final key = switch (rawKey) {
@@ -169,7 +154,6 @@ class ParserLogic {
       }
     }
 
-    // Support both "Temperature:" and "T =" styles.
     final tempMatch1 = RegExp(
       r'Temperature\s*:\s*([0-9.+-]+)',
     ).firstMatch(block);
@@ -182,7 +166,6 @@ class ParserLogic {
     final pressMatch2 = RegExp(r'\bP\s*=\s*([0-9.+-]+)').firstMatch(block);
     if (pressMatch2 != null) add('System', 'Pressure', pressMatch2.group(1)!);
 
-    // log fO2 variations
     final fo2Match1 = RegExp(r'log\s*fO2\s*:\s*([0-9.+-]+)').firstMatch(block);
     if (fo2Match1 != null) add('System', 'fO2', fo2Match1.group(1)!);
     final fo2Match2 = RegExp(
@@ -198,34 +181,31 @@ class ParserLogic {
     if (viscosityMatch != null) {
       add('System', 'viscosity', viscosityMatch.group(1)!);
     }
-    // Some runs print: "Viscosity of the System cannot be computed."
-    // In that case we intentionally leave System.viscosity empty.
 
-    // --- State Machine for Sections ---
-    String currentSection = 'System'; // Default to System context
+    String currentSection = 'System'; //
 
-    // Fixed sections that don't represent mineral phases
     final fixedSections = {'System', 'Liquid', 'Total Solids', 'Oxygen'};
 
-    // Helper to detect and normalize phase names
     String? detectPhase(String line) {
       final lower = line.toLowerCase().trim();
 
-      // Skip summary section headers
       if (lower.contains('summary of all fractionated')) return null;
       if (lower.contains('constraint flags')) return null;
 
-      // Check fixed sections first (these are NOT mineral phases)
-      if (lower.startsWith('total') && lower.contains('solid'))
+      if (lower.startsWith('total') && lower.contains('solid')) {
         return 'Total Solids';
-      if (lower.startsWith('liquid')) return 'Liquid';
-      if (lower.startsWith('oxygen')) return 'Oxygen';
-      if (lower.startsWith('system') && lower.contains('mass')) return 'System';
-      if (lower.startsWith('viscosity of the system'))
-        return null; // Not a phase header
+      }
+      if (lower.startsWith('liquid')) {
+        return 'Liquid';
+      }
+      if (lower.startsWith('oxygen')) {
+        return 'Oxygen';
+      }
+      if (lower.startsWith('system') && lower.contains('mass')) {
+        return 'System';
+      }
+      if (lower.startsWith('viscosity of the system')) return null;
 
-      // Pattern for mineral phases: "phasename    mass = " or "phasename    density = "
-      // This matches ANY mineral name followed by properties
       // Handles all 66 possible MELTS mineral phases dynamically
       final phaseMatch = RegExp(
         r'^([a-z][\w\s-]+?)\s{2,}(mass|density)\s*=',
@@ -235,7 +215,6 @@ class ParserLogic {
       if (phaseMatch != null) {
         var phaseName = phaseMatch.group(1)!.trim();
 
-        // Skip if it looks like a section we already handled
         if (phaseName.toLowerCase() == 'title') return null;
         if (phaseName.toLowerCase() == 't') return null;
 
@@ -248,7 +227,6 @@ class ParserLogic {
             })
             .join(' ');
 
-        // This is a mineral phase!
         return phaseName;
       }
 
@@ -267,30 +245,19 @@ class ParserLogic {
         continue;
       }
 
-      // The summary section ends only when the overall System (with mass=) or
-      // Oxygen line is reached.  Liquid, Total Solids, and all 66 possible
-      // mineral phases can legitimately appear INSIDE the summary and must
-      // therefore receive _frac storage — do NOT exit on those lines.
       if (inFractionatedSummary &&
           ((lower.startsWith('system') && lower.contains('mass')) ||
               lower.startsWith('oxygen'))) {
         inFractionatedSummary = false;
       }
 
-      // 1. Check for Section Change
       final detectedPhase = detectPhase(line);
       if (detectedPhase != null) {
         currentSection = detectedPhase;
       }
 
-      // If the line is a phase/property line, keep parsing it (don't continue).
-
-      // 2. Data Extraction
-
-      // Determine which add function to use based on fractionated summary status
       final addFunc = inFractionatedSummary ? addFrac : add;
 
-      // A. Oxygen keys contain spaces; handle explicitly.
       final oxygenMoles = RegExp(
         r'delta\s+moles\s*=\s*([0-9.eE+-]+)',
         caseSensitive: false,
@@ -306,9 +273,6 @@ class ParserLogic {
         addFunc('Oxygen', 'delta grams', oxygenGrams.group(1)!);
       }
 
-      // A2. Mineral formula lines (e.g., cpx Na0.02Ca0.74..., (Ca0.01Mg0.25Fe''0.63...)2SiO4)
-      // Parse formula for ANY mineral phase (anything not in fixedSections)
-      // This handles all 66 possible MELTS mineral phases dynamically
       if (!fixedSections.contains(currentSection)) {
         parseFormulaLineIntoCurrentSection(
           line,
@@ -317,8 +281,6 @@ class ParserLogic {
         );
       }
 
-      // A3. "wt% ox: Key1 Val1 Key2 Val2 ..." format used by fractionated-liquid
-      // summary lines, e.g. "wt% ox: SiO2 76.37 TiO2 0.26 Al2O3 10.28 ..."
       if (lower.startsWith('wt%')) {
         final colonIdx = line.indexOf(':');
         final after = colonIdx >= 0 ? line.substring(colonIdx + 1) : line;
@@ -342,14 +304,12 @@ class ParserLogic {
         continue;
       }
 
-      // C. "key = value" assignments (common in your sample)
       for (final m in RegExp(
         r'([A-Za-z0-9.#+-]+)\s*=\s*([0-9.+-]+(?:[eE][+-]?[0-9]+)?)',
       ).allMatches(line)) {
         addFunc(currentSection, m.group(1)!, m.group(2)!);
       }
 
-      // D. Two-line tables: headers on one line, numeric values on the next.
       if (i + 1 < lines.length) {
         final nextLine = lines[i + 1].trim();
         final headerTokens = _splitTokens(line);
@@ -367,19 +327,17 @@ class ParserLogic {
               ? headerTokens.length
               : valueTokens.length;
 
-          // Many MELTS tables are 3+ columns (e.g., albite/anorthite/sanidine).
           if (count >= 3) {
             for (var k = 0; k < count; k++) {
               final header = headerTokens[k];
               final value = valueTokens[k];
               addFunc(currentSection, header, value);
 
-              // Dynamic aliases for common end-members (works for any mineral phase)
               final h = header.toLowerCase();
               if (h == 'forsterite') addFunc(currentSection, 'Fo', value);
               if (h == 'fayalite') addFunc(currentSection, 'Fa', value);
             }
-            i++; // Consume value line
+            i++;
             continue;
           }
         }

@@ -12,11 +12,11 @@ import 'package:melts_parser/main.dart';
 void main() {
   testWidgets('App renders main title', (WidgetTester tester) async {
     // Give the desktop layout enough space in the test harness.
-    tester.binding.window.devicePixelRatioTestValue = 1.0;
-    tester.binding.window.physicalSizeTestValue = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.physicalSize = const Size(1400, 900);
     addTearDown(() {
-      tester.binding.window.clearPhysicalSizeTestValue();
-      tester.binding.window.clearDevicePixelRatioTestValue();
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
     });
 
     await tester.pumpWidget(const MyApp());
