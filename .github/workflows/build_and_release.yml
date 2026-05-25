@@ -1,0 +1,89 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: # Allows you to manually trigger the workflow from the Actions tab
+
+jobs:
+  build-macos:
+    name: Build macOS DMG
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build macOS app
+        run: flutter build macos --release
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Create DMG
+        run: |
+          create-dmg \
+            --volname "MELTS Parser" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "MELTS Parser.app" 150 190 \
+            --hide-extension "MELTS Parser.app" \
+            --app-drop-link 450 190 \
+            "MELTS-Parser-macOS.dmg" \
+            "build/macos/Build/Products/Release/MELTS Parser.app"
+
+      - name: Upload DMG as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MELTS-Parser-macOS
+          path: MELTS-Parser-macOS.dmg
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: MELTS-Parser-macOS.dmg
+
+  build-windows:
+    name: Build Windows EXE
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build Windows app
+        run: flutter build windows --release
+
+      - name: Compress Windows Build
+        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath MELTS-Parser-Windows.zip
+
+      - name: Upload ZIP as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MELTS-Parser-Windows
+          path: MELTS-Parser-Windows.zip
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: MELTS-Parser-Windows.zip
