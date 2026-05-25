@@ -73,17 +73,45 @@ jobs:
       - name: Build Windows app
         run: flutter build windows --release
 
-      - name: Compress Windows Build
-        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath MELTS-Parser-Windows.zip
+      - name: Create Windows Installer
+        run: |
+          $issContent = @"
+          [Setup]
+          AppName=MELTS Parser
+          AppVersion=1.0.0
+          DefaultDirName={autopf}\MELTS Parser
+          DefaultGroupName=MELTS Parser
+          OutputDir=.\Output
+          OutputBaseFilename=MELTS-Parser-Setup
+          SetupIconFile=windows\runner\resources\app_icon.ico
+          Compression=lzma2
+          SolidCompression=yes
+          PrivilegesRequired=lowest
 
-      - name: Upload ZIP as Artifact
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"
+
+          [Files]
+          Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{autoprograms}\MELTS Parser"; Filename: "{app}\melts_parser.exe"
+          Name: "{autodesktop}\MELTS Parser"; Filename: "{app}\melts_parser.exe"; Tasks: desktopicon
+
+          [Run]
+          Filename: "{app}\melts_parser.exe"; Description: "Launch MELTS Parser"; Flags: nowait postinstall skipifsilent
+          "@
+          Set-Content -Path installer.iss -Value $issContent
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+      - name: Upload Installer as Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MELTS-Parser-Windows
-          path: MELTS-Parser-Windows.zip
+          name: MELTS-Parser-Windows-Installer
+          path: Output\MELTS-Parser-Setup.exe
 
       - name: Attach to Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: MELTS-Parser-Windows.zip
+          files: Output\MELTS-Parser-Setup.exe
